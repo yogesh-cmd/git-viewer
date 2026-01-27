@@ -229,6 +229,7 @@ function Sidebar(handle: Handle) {
                 key={remote}
                 title={remote.toUpperCase()}
                 nodes={nodes}
+                initialExpanded={false}
               />
             ))}
           </>
@@ -239,9 +240,19 @@ function Sidebar(handle: Handle) {
 }
 
 function RefSection(handle: Handle) {
-  let expanded = true;
+  let expanded: boolean | null = null;
 
-  return ({ title, nodes }: { title: string; nodes: RefNode[] }) => (
+  return ({
+    title,
+    nodes,
+    initialExpanded = true,
+  }: {
+    title: string;
+    nodes: RefNode[];
+    initialExpanded?: boolean;
+  }) => {
+    if (expanded === null) expanded = initialExpanded;
+    return (
     <div css={{ marginBottom: "8px" }}>
       <div
         css={{
@@ -272,6 +283,7 @@ function RefSection(handle: Handle) {
       )}
     </div>
   );
+  };
 }
 
 function RefNodeItem(handle: Handle) {
