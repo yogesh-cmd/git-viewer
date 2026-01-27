@@ -88,11 +88,11 @@ type DiffResponse = {
 
 // Git helpers
 async function git(args: string): Promise<string> {
-  let { stdout } = await exec(`git ${args}`, {
+  let { stdout } = await exec(`git -c color.ui=never ${args}`, {
     cwd: repoDir,
     maxBuffer: 10 * 1024 * 1024,
   });
-  return stdout.trim();
+  return stdout.trimEnd();
 }
 
 async function getCurrentBranch(): Promise<string> {
