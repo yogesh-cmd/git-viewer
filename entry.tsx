@@ -33,6 +33,16 @@ type Commit = {
   graph: GraphNode;
 };
 
+type ChangedFile = {
+  path: string;
+  oldPath?: string;
+  additions: number;
+  deletions: number;
+  isNew: boolean;
+  isDeleted: boolean;
+  isRenamed: boolean;
+};
+
 type DiffData = {
   sha: string;
   shortSha: string;
@@ -42,6 +52,7 @@ type DiffData = {
   date: string;
   parents: string[];
   diffHtml: string;
+  files: ChangedFile[];
 };
 
 // ============================================================================
@@ -57,6 +68,7 @@ let state = {
   filter: "all" as string,
   search: "",
   loading: true,
+  fullscreenDiff: false,
 };
 
 let updateApp: () => void;
@@ -136,6 +148,19 @@ async function selectCommit(commit: Commit) {
   updateApp();
 }
 
+function toggleFullscreenDiff(open: boolean) {
+  if (!document.startViewTransition) {
+    state.fullscreenDiff = open;
+    updateApp();
+    return;
+  }
+
+  document.startViewTransition(() => {
+    state.fullscreenDiff = open;
+    updateApp();
+  });
+}
+
 // ============================================================================
 // Styles
 // ============================================================================
@@ -211,9 +236,6 @@ function Sidebar() {
   return () => (
     <div
       css={{
-        minWidth: "180px",
-        maxWidth: "300px",
-        width: "fit-content",
         borderRight: `1px solid ${colors.border}`,
         display: "flex",
         flexDirection: "column",
@@ -223,7 +245,6 @@ function Sidebar() {
       <div
         css={{
           padding: "12px",
-          borderBottom: `1px solid ${colors.border}`,
           fontWeight: 600,
           fontSize: "11px",
           textTransform: "uppercase",
@@ -342,7 +363,9 @@ function RefNodeItem(handle: Handle) {
         }}
         on={{ click: () => setFilter(node.fullName) }}
       >
-        {node.current && "● "}
+        {node.current && (
+          <span css={{ fontSize: "8px", marginRight: "4px" }}>●</span>
+        )}
         {node.name}
       </div>
     );
@@ -649,7 +672,23 @@ function CommitRow() {
 // ============================================================================
 
 function DiffPanel() {
+  let diffContentRef: HTMLElement;
+
+  function scrollToFile(path: string | null) {
+    if (!diffContentRef || !path) return;
+    let fileHeaders = diffContentRef.querySelectorAll(".d2h-file-header");
+    for (let header of fileHeaders) {
+      let nameEl = header.querySelector(".d2h-file-name");
+      if (nameEl?.textContent?.includes(path)) {
+        header.scrollIntoView({ block: "start" });
+        break;
+      }
+    }
+  }
+
   return () => {
+    let isFullscreen = state.fullscreenDiff;
+
     if (!state.selectedCommit) {
       return (
         <div
@@ -674,79 +713,317 @@ function DiffPanel() {
           display: "flex",
           flexDirection: "column",
           background: colors.bgLight,
+          viewTransitionName: "diff-panel",
+          ...(isFullscreen
+            ? {
+                position: "fixed",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 100,
+              }
+            : {}),
         }}
       >
         {/* Commit header */}
         <div
-          css={{ padding: "12px", borderBottom: `1px solid ${colors.border}` }}
+          css={{
+            padding: "12px",
+            borderBottom: `1px solid ${colors.border}`,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: "12px",
+            background: colors.bgLight,
+          }}
         >
-          <div css={{ fontWeight: 600, marginBottom: "4px" }}>
-            {state.selectedCommit.subject}
+          <div css={{ flex: 1, minWidth: 0 }}>
+            <div css={{ fontWeight: 600, marginBottom: "4px" }}>
+              {state.selectedCommit.subject}
+            </div>
+            <div css={{ fontSize: "12px", color: colors.textMuted }}>
+              <span>{state.selectedCommit.author}</span>
+              <span css={{ margin: "0 8px" }}>•</span>
+              <span>{state.selectedCommit.date}</span>
+              <span css={{ margin: "0 8px" }}>•</span>
+              <code css={{ color: colors.accent }}>
+                {state.selectedCommit.shortSha}
+              </code>
+              {state.diff && (
+                <>
+                  <span css={{ margin: "0 8px" }}>•</span>
+                  <span>
+                    {state.diff.files.length} file
+                    {state.diff.files.length !== 1 ? "s" : ""}
+                  </span>
+                </>
+              )}
+            </div>
           </div>
-          <div css={{ fontSize: "12px", color: colors.textMuted }}>
-            <span>{state.selectedCommit.author}</span>
-            <span css={{ margin: "0 8px" }}>•</span>
-            <span>{state.selectedCommit.date}</span>
-            <span css={{ margin: "0 8px" }}>•</span>
-            <code css={{ color: colors.accent }}>
-              {state.selectedCommit.shortSha}
-            </code>
-          </div>
-          {state.selectedCommit.body ? (
-            <div
+          {state.diff && (
+            <button
               css={{
-                marginTop: "8px",
-                whiteSpace: "pre-wrap",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "6px 12px",
+                border: `1px solid ${colors.border}`,
+                borderRadius: "4px",
+                background: colors.bg,
+                color: colors.text,
                 fontSize: "12px",
-                lineHeight: "1.4",
-              }}
-            >
-              {state.selectedCommit.body}
-            </div>
-          ) : null}
-        </div>
-
-        {/* Diff content */}
-        <div css={{ flex: 1, overflow: "auto" }}>
-          {state.diff ? (
-            <section
-              css={{
-                "& .d2h-wrapper": { background: "transparent" },
-                "& .d2h-file-header": {
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                "&:hover": {
                   background: colors.bgLighter,
-                  borderBottom: `1px solid ${colors.border}`,
-                  padding: "8px 12px",
+                  borderColor: colors.accent,
                 },
-                "& .d2h-file-name": { color: colors.text },
-                "& .d2h-code-line": { padding: "0 8px" },
-                "& .d2h-code-line-ctn": { color: colors.text },
-                "& .d2h-ins": { background: "#dafbe1" },
-                "& .d2h-del": { background: "#ffebe9" },
-                "& .d2h-ins .d2h-code-line-ctn": { color: colors.green },
-                "& .d2h-del .d2h-code-line-ctn": { color: colors.red },
-                "& .d2h-code-linenumber": {
-                  color: colors.textMuted,
-                  borderRight: `1px solid ${colors.border}`,
-                },
-                "& .d2h-file-diff": {
-                  borderBottom: `1px solid ${colors.border}`,
-                },
-                "& .d2h-diff-tbody": { position: "relative" },
               }}
-              innerHTML={state.diff.diffHtml}
-            />
-          ) : (
-            <div
-              css={{
-                padding: "20px",
-                textAlign: "center",
-                color: colors.textMuted,
-              }}
+              on={{ click: () => toggleFullscreenDiff(!isFullscreen) }}
             >
-              Loading diff...
-            </div>
+              {isFullscreen ? (
+                <>
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M4 14h6v6m10-10h-6V4m0 6 7-7M3 21l7-7" />
+                  </svg>
+                  Collapse
+                </>
+              ) : (
+                <>
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+                  </svg>
+                  Expand
+                </>
+              )}
+            </button>
           )}
         </div>
+
+        {/* Content area with sidebar and diff */}
+        <div css={{ flex: 1, display: "flex", overflow: "hidden" }}>
+          {/* File sidebar */}
+          {state.diff && state.diff.files.length > 0 && (
+            <div
+              css={{
+                borderRight: `1px solid ${colors.border}`,
+                display: "flex",
+                flexDirection: "column",
+                background: colors.bg,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                css={{
+                  padding: "8px 12px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                  color: colors.textMuted,
+                  borderBottom: `1px solid ${colors.border}`,
+                }}
+              >
+                Changed Files
+              </div>
+              <div css={{ flex: 1, overflow: "auto", padding: "4px 0" }}>
+                {state.diff.files.map(file => (
+                  <FileListItem
+                    key={file.path}
+                    file={file}
+                    onSelect={() => scrollToFile(file.path)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Diff content */}
+          <div css={{ flex: 1, overflow: "auto" }}>
+            {state.diff ? (
+              <section
+                connect={node => (diffContentRef = node)}
+                css={{
+                  "& .d2h-wrapper": { background: "transparent" },
+                  "& .d2h-file-header": {
+                    background: colors.bgLighter,
+                    borderBottom: `1px solid ${colors.border}`,
+                    padding: "8px 12px",
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 1,
+                  },
+                  "& .d2h-file-name": { color: colors.text },
+                  "& .d2h-code-line": { padding: "0 8px" },
+                  "& .d2h-code-line-ctn": { color: colors.text },
+                  "& .d2h-ins": { background: "#dafbe1" },
+                  "& .d2h-del": { background: "#ffebe9" },
+                  "& .d2h-ins .d2h-code-line-ctn": { color: colors.green },
+                  "& .d2h-del .d2h-code-line-ctn": { color: colors.red },
+                  "& .d2h-code-linenumber": {
+                    color: colors.textMuted,
+                    borderRight: `1px solid ${colors.border}`,
+                  },
+                  "& .d2h-file-diff": {
+                    borderBottom: `1px solid ${colors.border}`,
+                  },
+                  "& .d2h-diff-tbody": { position: "relative" },
+                }}
+                innerHTML={state.diff.diffHtml}
+              />
+            ) : (
+              <div
+                css={{
+                  padding: "20px",
+                  textAlign: "center",
+                  color: colors.textMuted,
+                }}
+              >
+                Loading diff...
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+}
+
+// ============================================================================
+// File List Item
+// ============================================================================
+
+function FileListItem() {
+  return ({ file, onSelect }: { file: ChangedFile; onSelect: () => void }) => {
+    let displayName = file.path.split("/").pop() ?? file.path;
+    let fullPath = file.path;
+
+    return (
+      <div
+        css={{
+          padding: "6px 12px",
+          cursor: "pointer",
+          "&:hover": {
+            background: colors.bgLighter,
+          },
+        }}
+        on={{ click: onSelect }}
+      >
+        <div
+          css={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <span
+            css={{
+              display: "flex",
+              alignItems: "center",
+              gap: "2px",
+              fontSize: "10px",
+              fontWeight: 500,
+              minWidth: "50px",
+            }}
+          >
+            {file.additions > 0 && (
+              <span css={{ color: colors.green }}>+{file.additions}</span>
+            )}
+            {file.deletions > 0 && (
+              <span css={{ color: colors.red }}>-{file.deletions}</span>
+            )}
+          </span>
+          <span
+            css={{
+              flex: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontSize: "12px",
+            }}
+            title={fullPath}
+          >
+            {file.isNew && (
+              <span
+                css={{
+                  display: "inline-block",
+                  padding: "1px 4px",
+                  marginRight: "6px",
+                  borderRadius: "3px",
+                  background: colors.green,
+                  color: "#fff",
+                  fontSize: "9px",
+                  fontWeight: 600,
+                }}
+              >
+                NEW
+              </span>
+            )}
+            {file.isDeleted && (
+              <span
+                css={{
+                  display: "inline-block",
+                  padding: "1px 4px",
+                  marginRight: "6px",
+                  borderRadius: "3px",
+                  background: colors.red,
+                  color: "#fff",
+                  fontSize: "9px",
+                  fontWeight: 600,
+                }}
+              >
+                DEL
+              </span>
+            )}
+            {file.isRenamed && (
+              <span
+                css={{
+                  display: "inline-block",
+                  padding: "1px 4px",
+                  marginRight: "6px",
+                  borderRadius: "3px",
+                  background: colors.accent,
+                  color: "#fff",
+                  fontSize: "9px",
+                  fontWeight: 600,
+                }}
+              >
+                REN
+              </span>
+            )}
+            {displayName}
+          </span>
+        </div>
+        {fullPath !== displayName && (
+          <div
+            css={{
+              fontSize: "10px",
+              color: colors.textMuted,
+              marginTop: "2px",
+              marginLeft: "58px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {fullPath}
+          </div>
+        )}
       </div>
     );
   };

@@ -77,6 +77,16 @@ type CommitsResponse = {
   maxLane: number;
 };
 
+type ChangedFile = {
+  path: string;
+  oldPath?: string;
+  additions: number;
+  deletions: number;
+  isNew: boolean;
+  isDeleted: boolean;
+  isRenamed: boolean;
+};
+
 type DiffResponse = {
   sha: string;
   shortSha: string;
@@ -86,6 +96,7 @@ type DiffResponse = {
   date: string;
   parents: string[];
   diffHtml: string;
+  files: ChangedFile[];
 };
 
 // Git helpers
@@ -132,13 +143,13 @@ async function getRefs(): Promise<RefsResponse> {
 
   let remotes: { [remote: string]: RefNode[] } = {};
   for (let [remote, branches] of Object.entries(remotesByOrigin)) {
-    remotes[remote] = buildTree(branches);
+    remotes[remote] = buildTree(branches, undefined, `${remote}/`);
   }
 
   return { local, remotes, currentBranch };
 }
 
-function buildTree(branches: string[], currentBranch?: string): RefNode[] {
+function buildTree(branches: string[], currentBranch?: string, prefix: string = ""): RefNode[] {
   let root: RefNode[] = [];
 
   // Sort branches: non-prefixed first, then by name
@@ -151,7 +162,7 @@ function buildTree(branches: string[], currentBranch?: string): RefNode[] {
 
   for (let branch of sorted) {
     let parts = branch.split("/");
-    insertIntoTree(root, parts, branch, currentBranch);
+    insertIntoTree(root, parts, prefix + branch, currentBranch);
   }
 
   return root;
@@ -388,7 +399,20 @@ async function getDiff(sha: string): Promise<DiffResponse> {
 
   let diffOutput = await git(`show --format="" ${sha}`);
 
-  let diffHtml = diff2html(parseDiff(diffOutput), {
+  let parsedDiff = parseDiff(diffOutput);
+
+  // Extract file information from the parsed diff
+  let files: ChangedFile[] = parsedDiff.map(file => ({
+    path: file.newName || file.oldName || "",
+    oldPath: file.isRename ? file.oldName : undefined,
+    additions: file.addedLines,
+    deletions: file.deletedLines,
+    isNew: file.isNew || false,
+    isDeleted: file.isDeleted || false,
+    isRenamed: file.isRename || false,
+  }));
+
+  let diffHtml = diff2html(parsedDiff, {
     drawFileList: false,
     outputFormat: "line-by-line",
     matching: "lines",
@@ -403,6 +427,7 @@ async function getDiff(sha: string): Promise<DiffResponse> {
     date: formatDate(date),
     parents: parents ? parents.split(" ").filter(Boolean) : [],
     diffHtml,
+    files,
   };
 }
 

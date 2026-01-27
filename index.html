@@ -13,6 +13,38 @@
         height: 100%;
         overflow: hidden;
       }
+      
+      /* View Transition Styles */
+      @view-transition {
+        navigation: auto;
+      }
+      
+      /* Diff panel morphs between positions */
+      ::view-transition-old(diff-panel),
+      ::view-transition-new(diff-panel) {
+        animation-duration: 0.35s;
+        animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      
+      /* Make the old and new states crossfade while morphing */
+      ::view-transition-old(diff-panel) {
+        animation: none;
+      }
+      
+      ::view-transition-new(diff-panel) {
+        animation: none;
+      }
+      
+      /* The group handles the position/size morphing automatically */
+      ::view-transition-group(diff-panel) {
+        animation-duration: 0.35s;
+        animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      
+      /* Image pair handles crossfade */
+      ::view-transition-image-pair(diff-panel) {
+        isolation: auto;
+      }
     </style>
   </head>
   <body>
