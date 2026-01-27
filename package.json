@@ -1,6 +1,6 @@
 {
   "name": "git-viewer",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "description": "Visual git log viewer with branch graph and diff display",
   "repository": {
     "type": "git",
@@ -29,6 +29,8 @@
     "release": "npm version major -m 'v%s [skip ci]' && pnpm build && npx npm@latest publish --provenance --access public"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
