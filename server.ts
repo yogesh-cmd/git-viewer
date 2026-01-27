@@ -437,10 +437,48 @@ let server = http.createServer(
   }),
 );
 
-server.listen(44100, () => {
-  console.log(`Git Tree Viewer running at http://localhost:44100`);
-  console.log(`Repository: ${repoDir}`);
+let startPort = 44100;
+let maxPort = 44200;
+let currentPort = startPort;
+
+function openBrowser(url: string): void {
+  let cmd =
+    process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "start"
+        : "xdg-open";
+  exec(`${cmd} ${url}`).catch(() => {
+    // Ignore errors - browser opening is best effort
+  });
+}
+
+function tryListen(port: number): void {
+  currentPort = port;
+  server.listen(port, () => {
+    let url = `http://localhost:${port}`;
+    console.log(`Git Tree Viewer running at ${url}`);
+    console.log(`Repository: ${repoDir}`);
+    openBrowser(url);
+  });
+}
+
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    let nextPort = currentPort + 1;
+    if (nextPort > maxPort) {
+      console.error(`Error: All ports from ${startPort} to ${maxPort} are in use`);
+      process.exit(1);
+    }
+    console.log(`Port ${currentPort} in use, trying ${nextPort}...`);
+    tryListen(nextPort);
+  } else {
+    console.error("Server error:", err);
+    process.exit(1);
+  }
 });
+
+tryListen(startPort);
 
 function shutdown() {
   server.close(() => {
