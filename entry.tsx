@@ -56,6 +56,24 @@ type DiffData = {
   files: ChangedFile[];
 };
 
+type StatusFile = {
+  path: string;
+  status: string;
+};
+
+type StatusData = {
+  staged: StatusFile[];
+  unstaged: StatusFile[];
+};
+
+type LastCommitData = {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  body: string;
+  files: StatusFile[];
+};
+
 // ============================================================================
 // API
 // ============================================================================
@@ -83,6 +101,58 @@ async function fetchDiff(sha: string, signal?: AbortSignal): Promise<DiffData> {
   return res.json();
 }
 
+async function fetchStatus(signal?: AbortSignal): Promise<StatusData> {
+  let res = await fetch("/api/status", { signal });
+  return res.json();
+}
+
+async function stageFiles(paths: string[]): Promise<void> {
+  await fetch("/api/stage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+}
+
+async function unstageFiles(paths: string[]): Promise<void> {
+  await fetch("/api/unstage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+}
+
+async function commitChanges(message: string, amend: boolean): Promise<void> {
+  await fetch("/api/commit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, amend }),
+  });
+}
+
+async function fetchLastCommit(signal?: AbortSignal): Promise<LastCommitData> {
+  let res = await fetch("/api/last-commit", { signal });
+  return res.json();
+}
+
+async function fetchWorkingDiff(
+  path: string,
+  signal?: AbortSignal,
+): Promise<{ diffHtml: string }> {
+  let params = new URLSearchParams({ path });
+  let res = await fetch(`/api/working-diff?${params}`, { signal });
+  return res.json();
+}
+
+async function fetchStagedDiff(
+  path: string,
+  signal?: AbortSignal,
+): Promise<{ diffHtml: string }> {
+  let params = new URLSearchParams({ path });
+  let res = await fetch(`/api/staged-diff?${params}`, { signal });
+  return res.json();
+}
+
 // ============================================================================
 // App Store
 // ============================================================================
@@ -92,12 +162,16 @@ class AppStore extends TypedEventTarget<{
   filter: Event;
   selectedCommit: Event;
   fullscreenDiff: Event;
+  view: Event;
+  status: Event;
 }> {
   refs: RefsData | null = null;
   filter = "all";
   search = "";
   selectedCommit: Commit | null = null;
   fullscreenDiff = false;
+  view: "commits" | "stage" = "commits";
+  status: StatusData | null = null;
 
   setRefs(refs: RefsData) {
     this.refs = refs;
@@ -124,6 +198,16 @@ class AppStore extends TypedEventTarget<{
       this.fullscreenDiff = open;
       this.dispatchEvent(new Event("fullscreenDiff"));
     });
+  }
+
+  setView(view: "commits" | "stage") {
+    this.view = view;
+    this.dispatchEvent(new Event("view"));
+  }
+
+  setStatus(status: StatusData) {
+    this.status = status;
+    this.dispatchEvent(new Event("status"));
   }
 }
 
@@ -197,46 +281,104 @@ function Sidebar(handle: Handle) {
 
   handle.on(store, {
     refs: () => handle.update(),
+    status: () => handle.update(),
+    view: () => handle.update(),
   });
 
-  return () => (
-    <div
-      css={{
-        borderRight: `1px solid ${colors.border}`,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
+  // Load status on mount
+  handle.queueTask(async signal => {
+    let status = await fetchStatus(signal);
+    store.setStatus(status);
+  });
+
+  return () => {
+    let totalChanges = store.status
+      ? store.status.staged.length + store.status.unstaged.length
+      : 0;
+    let isStageView = store.view === "stage";
+
+    return (
       <div
         css={{
-          padding: "12px",
-          fontWeight: 600,
-          textTransform: "uppercase",
-          letterSpacing: "0.5px",
-          color: colors.textMuted,
-          borderBottom: `1px solid ${colors.border}`,
+          borderRight: `1px solid ${colors.border}`,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
         }}
       >
-        Git Tree Viewer
+        <div
+          css={{
+            padding: "12px",
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.5px",
+            color: colors.textMuted,
+            borderBottom: `1px solid ${colors.border}`,
+          }}
+        >
+          Git Tree Viewer
+        </div>
+        <div css={{ flex: 1, overflow: "auto", padding: "8px 0" }}>
+          {/* Stage Section */}
+          <div
+            css={{
+              padding: "6px 12px",
+              marginBottom: "8px",
+              borderRadius: "3px",
+              marginRight: "8px",
+              marginLeft: "8px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              background: isStageView ? colors.accentDim : "transparent",
+              color: isStageView ? colors.accent : colors.text,
+              fontWeight: 600,
+              userSelect: "none",
+              "&:hover": {
+                background: isStageView ? colors.accentDim : colors.bgLighter,
+              },
+            }}
+            on={{
+              click: () => {
+                store.setFilter("");
+                store.setView("stage");
+              },
+            }}
+          >
+            <span>stage</span>
+            {totalChanges > 0 && (
+              <span
+                css={{
+                  background: colors.accent,
+                  color: "#fff",
+                  fontSize: "10px",
+                  padding: "2px 6px",
+                  borderRadius: "10px",
+                  fontWeight: 600,
+                }}
+              >
+                {totalChanges}
+              </span>
+            )}
+          </div>
+
+          {store.refs && (
+            <>
+              <RefSection title="LOCAL" nodes={store.refs.local} />
+              {Object.entries(store.refs.remotes).map(([remote, nodes]) => (
+                <RefSection
+                  key={remote}
+                  title={remote.toUpperCase()}
+                  nodes={nodes}
+                  initialExpanded={false}
+                />
+              ))}
+            </>
+          )}
+        </div>
       </div>
-      <div css={{ flex: 1, overflow: "auto", padding: "8px 0" }}>
-        {store.refs && (
-          <>
-            <RefSection title="LOCAL" nodes={store.refs.local} />
-            {Object.entries(store.refs.remotes).map(([remote, nodes]) => (
-              <RefSection
-                key={remote}
-                title={remote.toUpperCase()}
-                nodes={nodes}
-                initialExpanded={false}
-              />
-            ))}
-          </>
-        )}
-      </div>
-    </div>
-  );
+    );
+  };
 }
 
 function RefSection(handle: Handle) {
@@ -253,36 +395,36 @@ function RefSection(handle: Handle) {
   }) => {
     if (expanded === null) expanded = initialExpanded;
     return (
-    <div css={{ marginBottom: "8px" }}>
-      <div
-        css={{
-          padding: "4px 12px",
-          fontSize: "10px",
-          fontWeight: 600,
-          textTransform: "uppercase",
-          letterSpacing: "0.5px",
-          color: colors.textMuted,
-          cursor: "pointer",
-          "&:hover": { color: colors.text },
-        }}
-        on={{
-          click: () => {
-            expanded = !expanded;
-            handle.update();
-          },
-        }}
-      >
-        {expanded ? "▼" : "▶"} {title}
-      </div>
-      {expanded && (
-        <div css={{ paddingLeft: "8px" }}>
-          {nodes.map(node => (
-            <RefNodeItem key={node.name} node={node} depth={0} />
-          ))}
+      <div css={{ marginBottom: "8px" }}>
+        <div
+          css={{
+            padding: "4px 12px",
+            fontSize: "10px",
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.5px",
+            color: colors.textMuted,
+            userSelect: "none",
+            "&:hover": { color: colors.text },
+          }}
+          on={{
+            click: () => {
+              expanded = !expanded;
+              handle.update();
+            },
+          }}
+        >
+          {expanded ? "▼" : "▶"} {title}
         </div>
-      )}
-    </div>
-  );
+        {expanded && (
+          <div css={{ paddingLeft: "8px" }}>
+            {nodes.map(node => (
+              <RefNodeItem key={node.name} node={node} depth={0} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
   };
 }
 
@@ -304,10 +446,10 @@ function RefNodeItem(handle: Handle) {
             css={{
               padding: `3px 12px`,
               paddingLeft: `${paddingLeft}px`,
-              cursor: "pointer",
               color: colors.textMuted,
               fontSize: "12px",
               whiteSpace: "nowrap",
+              userSelect: "none",
               "&:hover": { color: colors.text },
             }}
             on={{
@@ -333,18 +475,23 @@ function RefNodeItem(handle: Handle) {
         css={{
           padding: `3px 12px`,
           paddingLeft: `${paddingLeft}px`,
-          cursor: "pointer",
           borderRadius: "3px",
           marginRight: "8px",
           background: isSelected ? colors.accentDim : "transparent",
           color: node.current ? colors.accent : colors.text,
           fontWeight: node.current ? 600 : 400,
           whiteSpace: "nowrap",
+          userSelect: "none",
           "&:hover": {
             background: isSelected ? colors.accentDim : colors.bgLighter,
           },
         }}
-        on={{ click: () => store.setFilter(node.fullName) }}
+        on={{
+          click: () => {
+            store.setFilter(node.fullName);
+            store.setView("commits");
+          },
+        }}
       >
         {node.current && (
           <span css={{ fontSize: "8px", marginRight: "4px" }}>●</span>
@@ -359,20 +506,43 @@ function RefNodeItem(handle: Handle) {
 // Main Panel (Commits + Diff)
 // ============================================================================
 
-function MainPanel() {
-  return () => (
-    <div
-      css={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
-      <CommitList />
-      <DiffPanel />
-    </div>
-  );
+function MainPanel(handle: Handle) {
+  let store = handle.context.get(App);
+
+  handle.on(store, {
+    view: () => handle.update(),
+  });
+
+  return () => {
+    if (store.view === "stage") {
+      return (
+        <div
+          css={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          <StagePanel />
+        </div>
+      );
+    }
+
+    return (
+      <div
+        css={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        <CommitList />
+        <DiffPanel />
+      </div>
+    );
+  };
 }
 
 // ============================================================================
@@ -384,10 +554,7 @@ function CommitList(handle: Handle) {
   let commits: Commit[] = [];
   let loading = true;
 
-  async function loadCommits(signal: AbortSignal) {
-    loading = true;
-    handle.update();
-
+  async function doLoadCommits(signal: AbortSignal) {
     let ref =
       store.filter === "all"
         ? "all"
@@ -400,14 +567,17 @@ function CommitList(handle: Handle) {
     handle.update();
   }
 
+  function loadCommits() {
+    loading = true;
+    handle.update(doLoadCommits);
+  }
+
   handle.on(store, {
-    refs(_, signal) {
-      loadCommits(signal);
-    },
-    filter(_, signal) {
-      loadCommits(signal);
-    },
+    refs: loadCommits,
+    filter: loadCommits,
   });
+
+  handle.queueTask(doLoadCommits);
 
   return () => (
     <div
@@ -536,7 +706,7 @@ function FilterButton(handle: Handle) {
           background: isActive ? colors.accentDim : "transparent",
           color: isActive ? colors.accent : colors.text,
           fontSize: "12px",
-          cursor: "pointer",
+          userSelect: "none",
           "&:hover": { borderColor: colors.accent },
         }}
         on={{ click: () => store.setFilter(filter) }}
@@ -571,8 +741,8 @@ function CommitRow(handle: Handle) {
     return (
       <tr
         css={{
-          cursor: "pointer",
           background: isSelected ? colors.accentDim : "transparent",
+          userSelect: "none",
         }}
         on={{ click: () => store.selectCommit(commit) }}
       >
@@ -823,7 +993,6 @@ function DiffPanel(handle: Handle) {
                 background: colors.bg,
                 color: colors.text,
                 fontSize: "12px",
-                cursor: "pointer",
                 whiteSpace: "nowrap",
                 "&:hover": {
                   background: colors.bgLighter,
@@ -967,7 +1136,7 @@ function FileListItem() {
       <div
         css={{
           padding: "6px 12px",
-          cursor: "pointer",
+          userSelect: "none",
           "&:hover": {
             background: colors.bgLighter,
           },
@@ -1072,6 +1241,580 @@ function FileListItem() {
             }}
           >
             {fullPath}
+          </div>
+        )}
+      </div>
+    );
+  };
+}
+
+// ============================================================================
+// Stage Panel
+// ============================================================================
+
+function StagePanel(handle: Handle) {
+  let store = handle.context.get(App);
+  let selectedFile: { path: string; type: "staged" | "unstaged" } | null = null;
+  let diffHtml: string | null = null;
+  let commitMessage = "";
+  let savedMessage = ""; // saved when toggling amend on
+  let amend = false;
+  let lastCommit: LastCommitData | null = null;
+  let loading = false;
+
+  async function loadStatus(signal: AbortSignal) {
+    let status = await fetchStatus(signal);
+    store.setStatus(status);
+  }
+
+  async function loadDiff(
+    path: string,
+    type: "staged" | "unstaged",
+    signal: AbortSignal,
+  ) {
+    // Don't call handle.update() before async work - it would abort the signal
+    try {
+      let result =
+        type === "unstaged"
+          ? await fetchWorkingDiff(path, signal)
+          : await fetchStagedDiff(path, signal);
+      if (signal.aborted) return;
+      diffHtml = result.diffHtml;
+    } catch {
+      if (signal.aborted) return;
+      diffHtml = "";
+    }
+    handle.update();
+  }
+
+  async function handleStage(paths: string[]) {
+    loading = true;
+    handle.update();
+    await stageFiles(paths);
+    let status = await fetchStatus();
+    store.setStatus(status);
+    // Clear selection if the file was staged
+    if (
+      selectedFile &&
+      selectedFile.type === "unstaged" &&
+      paths.includes(selectedFile.path)
+    ) {
+      selectedFile = { path: selectedFile.path, type: "staged" };
+    }
+    loading = false;
+    handle.update();
+  }
+
+  async function handleUnstage(paths: string[]) {
+    loading = true;
+    handle.update();
+    await unstageFiles(paths);
+    let status = await fetchStatus();
+    store.setStatus(status);
+    // Clear selection if the file was unstaged
+    if (
+      selectedFile &&
+      selectedFile.type === "staged" &&
+      paths.includes(selectedFile.path)
+    ) {
+      selectedFile = { path: selectedFile.path, type: "unstaged" };
+    }
+    loading = false;
+    handle.update();
+  }
+
+  async function handleCommit() {
+    if (!commitMessage.trim()) return;
+    loading = true;
+    handle.update();
+    await commitChanges(commitMessage, amend);
+    commitMessage = "";
+    amend = false;
+    lastCommit = null;
+    let status = await fetchStatus();
+    store.setStatus(status);
+    selectedFile = null;
+    diffHtml = null;
+    loading = false;
+    handle.update();
+  }
+
+  async function toggleAmend(checked: boolean) {
+    amend = checked;
+    if (checked) {
+      savedMessage = commitMessage; // save user's message
+      lastCommit = await fetchLastCommit();
+      commitMessage =
+        lastCommit.subject + (lastCommit.body ? "\n\n" + lastCommit.body : "");
+    } else {
+      commitMessage = savedMessage; // restore user's message
+      lastCommit = null;
+    }
+    handle.update();
+  }
+
+  handle.on(store, {
+    status: () => handle.update(),
+  });
+
+  // Load status on mount
+  handle.queueTask(loadStatus);
+
+  async function selectFile(
+    path: string,
+    type: "staged" | "unstaged",
+    signal: AbortSignal,
+  ) {
+    // Don't refetch if already selected
+    if (selectedFile?.path === path && selectedFile?.type === type) {
+      return;
+    }
+    selectedFile = { path, type };
+    handle.update(); // Update header immediately, keep old diff visible
+    await loadDiff(path, type, signal);
+  }
+
+  return () => {
+    let staged = store.status?.staged ?? [];
+    let unstaged = store.status?.unstaged ?? [];
+
+    // If amend is checked, merge last commit files into staged display
+    let displayStaged = staged;
+    if (amend && lastCommit) {
+      let stagedPaths = new Set(staged.map(f => f.path));
+      let amendFiles = lastCommit.files.filter(f => !stagedPaths.has(f.path));
+      displayStaged = [...staged, ...amendFiles];
+    }
+
+    return (
+      <div
+        css={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        {/* Top: Diff Viewer */}
+        <div
+          css={{
+            flex: "1 1 60%",
+            display: "flex",
+            flexDirection: "column",
+            borderBottom: `1px solid ${colors.border}`,
+            overflow: "hidden",
+          }}
+        >
+          {/* Diff Header */}
+          <div
+            css={{
+              padding: "8px 12px",
+              borderBottom: `1px solid ${colors.border}`,
+              background: colors.bgLight,
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            {selectedFile
+              ? `${selectedFile.type === "unstaged" ? "Unstaged" : "Staged"} changes for ${selectedFile.path}`
+              : "Select a file to view changes"}
+          </div>
+          {/* Diff Content */}
+          <div css={{ flex: 1, overflow: "auto", background: colors.bg }}>
+            {diffHtml ? (
+              <section
+                css={{
+                  "& .d2h-wrapper": { background: "transparent" },
+                  "& .d2h-file-header": {
+                    background: colors.bgLighter,
+                    borderBottom: `1px solid ${colors.border}`,
+                    padding: "8px 12px",
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 1,
+                  },
+                  "& .d2h-file-name": { color: colors.text },
+                  "& .d2h-code-line": { padding: "0 8px" },
+                  "& .d2h-code-line-ctn": { color: colors.text },
+                  "& .d2h-ins": { background: "#dafbe1" },
+                  "& .d2h-del": { background: "#ffebe9" },
+                  "& .d2h-ins .d2h-code-line-ctn": { color: colors.green },
+                  "& .d2h-del .d2h-code-line-ctn": { color: colors.red },
+                  "& .d2h-code-linenumber": {
+                    color: colors.textMuted,
+                    borderRight: `1px solid ${colors.border}`,
+                  },
+                  "& .d2h-file-diff": {
+                    borderBottom: `1px solid ${colors.border}`,
+                  },
+                  "& .d2h-diff-tbody": { position: "relative" },
+                }}
+                innerHTML={diffHtml}
+              />
+            ) : selectedFile ? (
+              <div
+                css={{
+                  padding: "20px",
+                  textAlign: "center",
+                  color: colors.textMuted,
+                }}
+              >
+                Loading diff...
+              </div>
+            ) : (
+              <div
+                css={{
+                  padding: "20px",
+                  textAlign: "center",
+                  color: colors.textMuted,
+                }}
+              >
+                Select a file to view its diff
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Bottom: 3-column layout */}
+        <div
+          css={{
+            flex: "0 0 300px",
+            display: "flex",
+            gap: "1px",
+            background: colors.border,
+            minHeight: "200px",
+          }}
+        >
+          {/* Left: Unstaged Changes */}
+          <div
+            css={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              background: colors.bg,
+              overflow: "hidden",
+            }}
+          >
+            <div
+              css={{
+                padding: "8px 12px",
+                borderBottom: `1px solid ${colors.border}`,
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                color: colors.textMuted,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span>Unstaged ({unstaged.length})</span>
+            </div>
+            <div css={{ flex: 1, overflow: "auto" }}>
+              {unstaged.map(file => (
+                <StatusFileItem
+                  key={file.path}
+                  file={file}
+                  isSelected={
+                    selectedFile?.path === file.path &&
+                    selectedFile?.type === "unstaged"
+                  }
+                  onSelect={signal => selectFile(file.path, "unstaged", signal)}
+                  onDoubleClick={() => handleStage([file.path])}
+                />
+              ))}
+              {unstaged.length === 0 && (
+                <div
+                  css={{
+                    padding: "12px",
+                    color: colors.textMuted,
+                    fontSize: "12px",
+                    textAlign: "center",
+                  }}
+                >
+                  No unstaged changes
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Center: Commit Message */}
+          <div
+            css={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              background: colors.bg,
+              overflow: "hidden",
+            }}
+          >
+            <div
+              css={{
+                padding: "8px 12px",
+                borderBottom: `1px solid ${colors.border}`,
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                color: colors.textMuted,
+              }}
+            >
+              Commit Message
+            </div>
+            <div
+              css={{
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                padding: "12px",
+              }}
+            >
+              <textarea
+                css={{
+                  flex: 1,
+                  resize: "none",
+                  border: `1px solid ${colors.border}`,
+                  borderRadius: "4px",
+                  padding: "8px",
+                  fontSize: "13px",
+                  fontFamily: "sf-mono, monospace",
+                  background: colors.bg,
+                  color: colors.text,
+                  "&:focus": {
+                    outline: "none",
+                    borderColor: colors.accent,
+                  },
+                  "&::placeholder": {
+                    color: colors.textMuted,
+                  },
+                }}
+                placeholder="Enter commit message..."
+                value={commitMessage}
+                on={{
+                  input: e => {
+                    commitMessage = e.currentTarget.value;
+                    handle.update();
+                  },
+                  keydown: e => {
+                    if (e.metaKey && e.key === "Enter") {
+                      e.preventDefault();
+                      handleCommit();
+                    }
+                  },
+                }}
+              />
+              <div
+                css={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginTop: "12px",
+                  gap: "12px",
+                }}
+              >
+                <label
+                  css={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    fontSize: "12px",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={amend}
+                    on={{
+                      change: e => toggleAmend(e.currentTarget.checked),
+                    }}
+                  />
+                  Amend
+                </label>
+                <button
+                  css={{
+                    padding: "6px 16px",
+                    border: "none",
+                    borderRadius: "4px",
+                    background:
+                      displayStaged.length > 0 && commitMessage.trim()
+                        ? colors.accent
+                        : colors.bgLighter,
+                    color:
+                      displayStaged.length > 0 && commitMessage.trim()
+                        ? "#fff"
+                        : colors.textMuted,
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor:
+                      displayStaged.length > 0 && commitMessage.trim()
+                        ? "pointer"
+                        : "not-allowed",
+                    "&:hover": {
+                      background:
+                        displayStaged.length > 0 && commitMessage.trim()
+                          ? "#0860ca"
+                          : colors.bgLighter,
+                    },
+                  }}
+                  disabled={
+                    displayStaged.length === 0 ||
+                    !commitMessage.trim() ||
+                    loading
+                  }
+                  on={{ click: handleCommit }}
+                >
+                  {loading ? "..." : "Commit"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Right: Staged Changes */}
+          <div
+            css={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              background: colors.bg,
+              overflow: "hidden",
+            }}
+          >
+            <div
+              css={{
+                padding: "8px 12px",
+                borderBottom: `1px solid ${colors.border}`,
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                color: colors.textMuted,
+              }}
+            >
+              Staged ({displayStaged.length})
+            </div>
+            <div css={{ flex: 1, overflow: "auto" }}>
+              {displayStaged.map(file => (
+                <StatusFileItem
+                  key={file.path}
+                  file={file}
+                  isSelected={
+                    selectedFile?.path === file.path &&
+                    selectedFile?.type === "staged"
+                  }
+                  onSelect={signal => selectFile(file.path, "staged", signal)}
+                  onDoubleClick={() => handleUnstage([file.path])}
+                />
+              ))}
+              {displayStaged.length === 0 && (
+                <div
+                  css={{
+                    padding: "12px",
+                    color: colors.textMuted,
+                    fontSize: "12px",
+                    textAlign: "center",
+                  }}
+                >
+                  No staged changes
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+}
+
+function StatusFileItem() {
+  return ({
+    file,
+    isSelected,
+    onSelect,
+    onDoubleClick,
+  }: {
+    file: StatusFile;
+    isSelected: boolean;
+    onSelect: (signal: AbortSignal) => void;
+    onDoubleClick: () => void;
+  }) => {
+    let displayName = file.path.split("/").pop() ?? file.path;
+    let statusLabel =
+      {
+        M: "MOD",
+        A: "ADD",
+        D: "DEL",
+        R: "REN",
+        "?": "NEW",
+      }[file.status] ?? file.status;
+    let statusColor =
+      {
+        M: colors.accent,
+        A: colors.green,
+        D: colors.red,
+        R: colors.accent,
+        "?": colors.green,
+      }[file.status] ?? colors.textMuted;
+
+    return (
+      <div
+        css={{
+          padding: "6px 12px",
+          background: isSelected ? colors.accentDim : "transparent",
+          userSelect: "none",
+          "&:hover": {
+            background: isSelected ? colors.accentDim : colors.bgLighter,
+          },
+        }}
+        on={{
+          click: (_, signal) => onSelect(signal),
+          dblclick: onDoubleClick,
+        }}
+      >
+        <div
+          css={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <span
+            css={{
+              fontSize: "9px",
+              fontWeight: 600,
+              padding: "2px 4px",
+              borderRadius: "3px",
+              background: statusColor,
+              color: "#fff",
+            }}
+          >
+            {statusLabel}
+          </span>
+          <span
+            css={{
+              flex: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontSize: "12px",
+            }}
+            title={file.path}
+          >
+            {displayName}
+          </span>
+        </div>
+        {file.path !== displayName && (
+          <div
+            css={{
+              fontSize: "10px",
+              color: colors.textMuted,
+              marginTop: "2px",
+              marginLeft: "32px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {file.path}
           </div>
         )}
       </div>

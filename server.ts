@@ -99,6 +99,24 @@ type DiffResponse = {
   files: ChangedFile[];
 };
 
+type StatusFile = {
+  path: string;
+  status: string; // M, A, D, R, ??
+};
+
+type StatusResponse = {
+  staged: StatusFile[];
+  unstaged: StatusFile[];
+};
+
+type LastCommitResponse = {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  body: string;
+  files: StatusFile[];
+};
+
 // Git helpers
 async function git(args: string): Promise<string> {
   let { stdout } = await exec(`git -c color.ui=never ${args}`, {
@@ -390,6 +408,137 @@ function formatDate(date: string): string {
   });
 }
 
+async function getStatus(): Promise<StatusResponse> {
+  let output = await git("status --porcelain=v1");
+  let lines = output ? output.split("\n").filter(Boolean) : [];
+
+  let staged: StatusFile[] = [];
+  let unstaged: StatusFile[] = [];
+
+  for (let line of lines) {
+    let indexStatus = line[0];
+    let workTreeStatus = line[1];
+    let path = line.slice(3);
+
+    // Handle renames: "R  old -> new"
+    if (path.includes(" -> ")) {
+      path = path.split(" -> ")[1];
+    }
+
+    // Staged changes (index status is not space or ?)
+    if (indexStatus !== " " && indexStatus !== "?") {
+      staged.push({ path, status: indexStatus });
+    }
+
+    // Unstaged changes (work tree status is not space)
+    if (workTreeStatus !== " ") {
+      let status = workTreeStatus === "?" ? "?" : workTreeStatus;
+      unstaged.push({ path, status });
+    }
+  }
+
+  return { staged, unstaged };
+}
+
+async function stageFiles(paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  let escaped = paths.map(p => `"${p}"`).join(" ");
+  await git(`add ${escaped}`);
+}
+
+async function unstageFiles(paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  let escaped = paths.map(p => `"${p}"`).join(" ");
+  await git(`restore --staged ${escaped}`);
+}
+
+async function commitChanges(message: string, amend: boolean): Promise<void> {
+  let escapedMessage = message.replace(/"/g, '\\"');
+  let args = `commit -m "${escapedMessage}"`;
+  if (amend) {
+    args += " --amend";
+  }
+  await git(args);
+}
+
+async function getLastCommit(): Promise<LastCommitResponse> {
+  let format = "%H%x1f%h%x1f%s%x1f%b";
+  let metaOutput = await git(`log -1 --format="${format}"`);
+  let [sha, shortSha, subject, body] = metaOutput.split("\x1f");
+
+  // Get list of files changed in the last commit
+  let filesOutput = await git("diff-tree --no-commit-id --name-status -r HEAD");
+  let files: StatusFile[] = [];
+  if (filesOutput) {
+    for (let line of filesOutput.split("\n").filter(Boolean)) {
+      let [status, ...pathParts] = line.split("\t");
+      let path = pathParts.join("\t");
+      // Handle renames which have two paths
+      if (pathParts.length > 1) {
+        path = pathParts[1]; // Use the new name
+      }
+      files.push({ path, status: status[0] });
+    }
+  }
+
+  return {
+    sha,
+    shortSha,
+    subject,
+    body: body ? body.trimEnd() : "",
+    files,
+  };
+}
+
+async function getWorkingDiff(filePath: string): Promise<string> {
+  // First try normal diff for tracked files
+  let output = await git(`diff -- "${filePath}"`);
+  if (output) {
+    return output;
+  }
+  
+  // For untracked files, generate a diff showing the whole file as added
+  try {
+    let fileContent = fs.readFileSync(path.join(repoDir!, filePath), "utf-8");
+    let lines = fileContent.split("\n");
+    let diffLines = [
+      `diff --git a/${filePath} b/${filePath}`,
+      `new file mode 100644`,
+      `--- /dev/null`,
+      `+++ b/${filePath}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map(line => `+${line}`),
+    ];
+    return diffLines.join("\n");
+  } catch {
+    return "";
+  }
+}
+
+async function getStagedDiff(filePath: string): Promise<string> {
+  let output = await git(`diff --cached -- "${filePath}"`);
+  if (output) {
+    return output;
+  }
+  
+  // For newly added files, show the staged content as added
+  try {
+    let fileContent = await git(`show :${filePath}`);
+    let lines = fileContent.split("\n");
+    let diffLines = [
+      `diff --git a/${filePath} b/${filePath}`,
+      `new file mode 100644`,
+      `--- /dev/null`,
+      `+++ b/${filePath}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map(line => `+${line}`),
+    ];
+    return diffLines.join("\n");
+  } catch {
+    return "";
+  }
+}
+
 async function getDiff(sha: string): Promise<DiffResponse> {
   let format = "%H%x1f%h%x1f%s%x1f%b%x1f%an%x1f%ai%x1f%P";
   let metaOutput = await git(`show -z --format="${format}" -s ${sha}`);
@@ -475,10 +624,111 @@ router.get("/api/diff/:sha", async ({ params }) => {
   }
 });
 
+router.get("/api/status", async () => {
+  try {
+    let status = await getStatus();
+    return Response.json(status);
+  } catch (error) {
+    console.error("Error getting status:", error);
+    return Response.json({ error: "Failed to get status" }, { status: 500 });
+  }
+});
+
+router.post("/api/stage", async ({ request }) => {
+  try {
+    let { paths } = await request.json();
+    await stageFiles(paths);
+    return Response.json({ success: true });
+  } catch (error) {
+    console.error("Error staging files:", error);
+    return Response.json({ error: "Failed to stage files" }, { status: 500 });
+  }
+});
+
+router.post("/api/unstage", async ({ request }) => {
+  try {
+    let { paths } = await request.json();
+    await unstageFiles(paths);
+    return Response.json({ success: true });
+  } catch (error) {
+    console.error("Error unstaging files:", error);
+    return Response.json({ error: "Failed to unstage files" }, { status: 500 });
+  }
+});
+
+router.post("/api/commit", async ({ request }) => {
+  try {
+    let { message, amend } = await request.json();
+    await commitChanges(message, amend || false);
+    return Response.json({ success: true });
+  } catch (error) {
+    console.error("Error committing:", error);
+    return Response.json({ error: "Failed to commit" }, { status: 500 });
+  }
+});
+
+router.get("/api/last-commit", async () => {
+  try {
+    let lastCommit = await getLastCommit();
+    return Response.json(lastCommit);
+  } catch (error) {
+    console.error("Error getting last commit:", error);
+    return Response.json({ error: "Failed to get last commit" }, { status: 500 });
+  }
+});
+
+router.get("/api/working-diff", async ({ url }) => {
+  try {
+    let filePath = url.searchParams.get("path");
+    if (!filePath) {
+      return Response.json({ error: "Missing path parameter" }, { status: 400 });
+    }
+    let diffOutput = await getWorkingDiff(filePath);
+    let parsedDiff = parseDiff(diffOutput);
+    let diffHtml = diff2html(parsedDiff, {
+      drawFileList: false,
+      outputFormat: "line-by-line",
+      matching: "lines",
+    });
+    return Response.json({ diffHtml });
+  } catch (error) {
+    console.error("Error getting working diff:", error);
+    return Response.json({ error: "Failed to get working diff" }, { status: 500 });
+  }
+});
+
+router.get("/api/staged-diff", async ({ url }) => {
+  try {
+    let filePath = url.searchParams.get("path");
+    if (!filePath) {
+      return Response.json({ error: "Missing path parameter" }, { status: 400 });
+    }
+    let diffOutput = await getStagedDiff(filePath);
+    let parsedDiff = parseDiff(diffOutput);
+    let diffHtml = diff2html(parsedDiff, {
+      drawFileList: false,
+      outputFormat: "line-by-line",
+      matching: "lines",
+    });
+    return Response.json({ diffHtml });
+  } catch (error) {
+    console.error("Error getting staged diff:", error);
+    return Response.json({ error: "Failed to get staged diff" }, { status: 500 });
+  }
+});
+
 // Server
 let server = http.createServer(
   createRequestListener(async request => {
-    return await router.fetch(request);
+    let response = await router.fetch(request);
+    // Clone response to add cache-control header
+    let headers = new Headers(response.headers);
+    headers.set("Cache-Control", "no-store");
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   }),
 );
 
